@@ -11,11 +11,12 @@ import {
 } from "type-graphql";
 import argon2 from "argon2";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { COOKIE_NAME, FORGET_PASSWORD_PREFIX } from "../constants"
+import { COOKIE_NAME, FORGET_PASSWORD_PREFIX } from "../constants";
 import { UsernamePasswordInput } from "./UsernamePasswordInput";
 import { validateRegister } from "../utils/validateRegister";
 import { sendEmail } from "../utils/sendEmail";
-import { v4 } from 'uuid'
+import { v4 } from "uuid";
+import { getConnection } from "typeorm";
 
 @ObjectType()
 class FieldError {
@@ -38,105 +39,119 @@ class UserResponse {
 export class UserResolver {
   @Mutation(() => UserResponse)
   async changePassword(
-    @Arg('token') token: string,
-    @Arg('newPassword') newPassword: string,
-    @Ctx() { redis, em, req }: MyContext
+    @Arg("token") token: string,
+    @Arg("newPassword") newPassword: string,
+    @Ctx() { redis, req }: MyContext
   ): Promise<UserResponse> {
     if (newPassword.length <= 2) {
-      return { errors: [
-        {
-          field: "newPassword",
-          message: "length must be greater than 2",
-        },
-      ],
+      return {
+        errors: [
+          {
+            field: "newPassword",
+            message: "length must be greater than 2",
+          },
+        ],
+      };
     }
-  }
-    const key = FORGET_PASSWORD_PREFIX+token
-    const userId = await redis.get(key)
-    if(!userId){
-      return { errors: [
-        {
-          field: "token",
-          message: "token expired",
-        },
-      ],
-     }
+    const key = FORGET_PASSWORD_PREFIX + token;
+    const userId = await redis.get(key);
+    if (!userId) {
+      return {
+        errors: [
+          {
+            field: "token",
+            message: "token expired",
+          },
+        ],
+      };
     }
+    const userIdNum = parseInt(userId);
+    const user = await User.findOne(userIdNum);
 
-    const user = await em.findOne(User, {id: parseInt(userId)})
-
-    if(!user){
-      return { errors: [
-        {
-          field: "token",
-          message: "user error",
-        },
-      ],
-     }
+    if (!user) {
+      return {
+        errors: [
+          {
+            field: "token",
+            message: "user error",
+          },
+        ],
+      };
     }
-    user.password = await argon2.hash(newPassword)
-    await em.persistAndFlush(user)
-
-    await redis.del(key)
+    await User.update(
+      { id: userIdNum },
+      {
+        password: await argon2.hash(newPassword),
+      }
+    );
+    await redis.del(key);
 
     //log in user after change password
-    req.session.userId = user.id
+    req.session.userId = user.id;
 
-    return { user }
+    return { user };
   }
-  
+
   @Mutation(() => Boolean)
   async forgotPassword(
-    @Arg('email') email: string,
-    @Ctx() { em,redis }: MyContext
-  ){
-    const user = await em.findOne(User, { email })
-    if(!user){
-      return true
+    @Arg("email") email: string,
+    @Ctx() { redis }: MyContext
+  ) {
+    //as email is not the primary column
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return true;
     }
-    const token = v4()
+    const token = v4();
 
-    await redis.set(FORGET_PASSWORD_PREFIX+token, user.id, 'ex', 1000 * 60 * 60 * 24 * 3)
-    await sendEmail(email, `<a href="http://localhost:3000/change-password/${token}">reset password</a>`)
-    return true
+    await redis.set(
+      FORGET_PASSWORD_PREFIX + token,
+      user.id,
+      "ex",
+      1000 * 60 * 60 * 24 * 3
+    );
+    await sendEmail(
+      email,
+      `<a href="http://localhost:3000/change-password/${token}">reset password</a>`
+    );
+    return true;
   }
 
   @Query(() => User, { nullable: true })
-  async me(@Ctx() { req, em }: MyContext) {
+  async me(@Ctx() { req }: MyContext) {
     if (!req.session.userId) {
       return null;
     }
 
-    const user = await em.findOne(User, { id: req.session.userId });
-    return user;
+    return User.findOne(req.session.userId);
   }
 
   @Mutation(() => UserResponse)
   async register(
     @Arg("options") options: UsernamePasswordInput,
-    @Ctx() { em, req }: MyContext
+    @Ctx() { req }: MyContext
   ): Promise<UserResponse> {
-    const errors = validateRegister(options)
-    if(errors){
-      return { errors }
+    const errors = validateRegister(options);
+    if (errors) {
+      return { errors };
     }
 
     const hashedPassword = await argon2.hash(options.password);
     let user;
     try {
-      const result = await (em as EntityManager)
-        .createQueryBuilder(User)
-        .getKnexQuery()
-        .insert({
+      // User.create({}).save()
+      const result = await getConnection()
+        .createQueryBuilder()
+        .insert()
+        .into(User)
+        .values({
           username: options.username,
           email: options.email,
           password: hashedPassword,
-          created_at: new Date(),
-          updated_at: new Date(),
-        })
-        .returning("*");
-        user = result[0]
-    } catch (err) {
+        }).returning("*")
+        .execute()
+        user = result.raw[0]
+        } catch (err) {
       if (err.code === "23505") {
         //duplicate username error
         return {
@@ -158,12 +173,13 @@ export class UserResolver {
   async login(
     @Arg("usernameOrEmail") usernameOrEmail: string,
     @Arg("password") password: string,
-    @Ctx() { em, req }: MyContext
+    @Ctx() { req }: MyContext
   ): Promise<UserResponse> {
-    const user = await em.findOne(User, 
-      usernameOrEmail.includes('@') ? 
-      { email: usernameOrEmail }
-      : { username: usernameOrEmail });
+    const user = await User.findOne(
+      usernameOrEmail.includes("@")
+        ? { where : {email: usernameOrEmail} }
+        : { where : {username: usernameOrEmail} }
+    );
     if (!user) {
       return {
         errors: [
@@ -195,7 +211,7 @@ export class UserResolver {
   @Mutation(() => Boolean)
   logout(@Ctx() { req, res }: MyContext) {
     return new Promise((resolve) =>
-      req.session.destroy((err) => {
+      req.session.destroy((err: any) => {
         res.clearCookie(COOKIE_NAME);
         if (err) {
           console.log(err);
