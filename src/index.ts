@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import 'dotenv-safe/config'
 import { COOKIE_NAME, __prod__ } from "./constants"
 import express from 'express'
 import { ApolloServer } from 'apollo-server-express'
@@ -19,9 +20,7 @@ import { Post } from './entities/Post'
 const main = async () => {
     const connection = await createConnection({
       type: 'postgres',
-      database: 'lireddit2',
-      username: 'postgres',
-      password: 'postgres',
+      url: process.env.DATABASE_URL,
       logging: true,
       synchronize: true,
       entities: [Post, User],
@@ -29,11 +28,11 @@ const main = async () => {
     const app = express()
    
     const RedisStore = connectRedis(session)
-    const redis = new Redis()
+    const redis = new Redis(process.env.REDIS_URL)
 
     
   app.use(cors({
-    origin:"http://localhost:3000",
+    origin:process.env.CORS_ORIGIN,
     credentials:true,
   }));
   app.use(
@@ -50,7 +49,7 @@ const main = async () => {
         secure: false, // cookie only works in https
       },
       saveUninitialized: false,
-      secret: "idontknowwhybutitworks",
+      secret: process.env.SESSION_SECRET,
       resave: false,
     })
   );
@@ -66,7 +65,7 @@ const main = async () => {
 
     apolloServer.applyMiddleware({ app,cors:false })
 
-    app.listen(4000, () => {
+    app.listen(parseInt(process.env.PORT), () => {
         console.log('server started on localhost:4000')
     })
 }
