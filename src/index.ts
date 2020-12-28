@@ -14,7 +14,7 @@ import cors from 'cors'
 import { createConnection } from 'typeorm'
 import { User } from './entities/User'
 import { Post } from './entities/Post'
-
+import path from 'path'
 
 
 const main = async () => {
@@ -23,6 +23,7 @@ const main = async () => {
       url: process.env.DATABASE_URL,
       logging: true,
       synchronize: true,
+      migrations: [path.join(__dirname, './migrations/*')],
       entities: [Post, User],
     })
     const app = express()
